@@ -13,6 +13,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/urfave/cli/v3"
 	gormzerolog "github.com/vitaliy-art/gorm-zerolog"
+	"github.com/winfsp/cgofuse/fuse"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
@@ -120,6 +121,7 @@ var cmd = &cli.Command{
 		cmdShow,
 		cmdClear,
 		cmdDelete,
+		cmdMount,
 	},
 }
 
@@ -315,6 +317,39 @@ var cmdTag = &cli.Command{
 			}
 		}
 
+		return nil
+	},
+}
+
+var cmdMount = &cli.Command{
+	Name: "mount",
+	Arguments: []cli.Argument{
+		&cli.StringArg{Name: "mountpoint"},
+	},
+	Flags: []cli.Flag{
+		flagConfig,
+	},
+	Action: func(ctx context.Context, command *cli.Command) error {
+		mountPoint := command.StringArg("mountpoint")
+		if mountPoint == "" {
+			return errors.New("argument mountpoint is required")
+		}
+
+		config, err := getConfig(command)
+		if err != nil {
+			return err
+		}
+		_ = config
+
+		f, err := ft.NewTagFileSystem()
+		if err != nil {
+			return err
+		}
+
+		host := fuse.NewFileSystemHost(f)
+		host.SetCapReaddirPlus(true)
+		host.SetUseIno(true) // FUSE3 only
+		host.Mount(mountPoint, []string{})
 		return nil
 	},
 }

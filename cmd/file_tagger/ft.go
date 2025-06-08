@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/cockroachdb/errors"
 	"github.com/goccy/go-yaml"
@@ -65,11 +67,195 @@ func saveConfig(path string, config *Config) error {
 	return errors.Wrap(os.WriteFile(path, buf, 0644), "save config")
 }
 
+func homeDir() string {
+	h, err := os.UserHomeDir()
+	if err != nil {
+		panic(err)
+	}
+	return h
+}
+
+var flagConfig = &cli.StringFlag{
+	Name:    "config",
+	Aliases: []string{"c"},
+	Value:   filepath.Join(homeDir(), ".config", "file-tagger", "config.yaml"),
+}
+
+func getConfig(command *cli.Command) (*Config, error) {
+	configPath := command.String("config")
+	config, err := loadConfig(configPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return nil, err
+		}
+		config = defaultConfig()
+		err = saveConfig(configPath, config)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	err = config.Validate()
+	if err != nil {
+		return nil, err
+	}
+	return config, nil
+}
+
+func openDB(dsn string) (*gorm.DB, error) {
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
+		Logger: gormzerolog.NewGormLogger(),
+	})
+	if err != nil {
+		return nil, errors.Wrap(err, "open db")
+	}
+	return db, nil
+}
+
 var cmd = &cli.Command{
 	Name:  "ft",
 	Usage: "File tagging tool",
 	Commands: []*cli.Command{
 		cmdTag,
+		cmdShow,
+		cmdClear,
+		cmdDelete,
+	},
+}
+
+var cmdClear = &cli.Command{
+	Name: "clear",
+	Arguments: []cli.Argument{
+		&cli.StringArg{Name: "path"},
+	},
+	Flags: []cli.Flag{
+		flagConfig,
+	},
+	Action: func(ctx context.Context, command *cli.Command) error {
+		config, err := getConfig(command)
+		if err != nil {
+			return err
+		}
+
+		filePath := command.StringArg("path")
+		if filePath == "" {
+			return errors.New("argument path is required")
+		}
+		filePath, err = filepath.Abs(filePath)
+		if err != nil {
+			return err
+		}
+
+		db, err := openDB(config.DSN)
+		if err != nil {
+			return err
+		}
+
+		tagger := ft.NewTagger(db)
+		err = tagger.Migrate()
+		if err != nil {
+			return err
+		}
+
+		return tagger.Clear(filePath)
+	},
+}
+
+var cmdDelete = &cli.Command{
+	Name:    "delete",
+	Aliases: []string{"remove", "rm"},
+	Arguments: []cli.Argument{
+		&cli.StringArg{Name: "path"},
+		&cli.StringArgs{Name: "tags", Max: 10},
+	},
+	Flags: []cli.Flag{
+		flagConfig,
+	},
+	Action: func(ctx context.Context, command *cli.Command) error {
+		config, err := getConfig(command)
+		if err != nil {
+			return err
+		}
+
+		filePath := command.StringArg("path")
+		if filePath == "" {
+			return errors.New("argument path is required")
+		}
+		filePath, err = filepath.Abs(filePath)
+		if err != nil {
+			return err
+		}
+
+		db, err := openDB(config.DSN)
+		if err != nil {
+			return err
+		}
+
+		tagger := ft.NewTagger(db)
+		err = tagger.Migrate()
+		if err != nil {
+			return err
+		}
+
+		tags := command.StringArgs("tags")
+		for _, tag := range tags {
+			tag = strings.TrimSpace(tag)
+			if len(tag) == 0 {
+				continue
+			}
+			err = tagger.DeleteTag(filePath, tag)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	},
+}
+
+var cmdShow = &cli.Command{
+	Name: "show",
+	Arguments: []cli.Argument{
+		&cli.StringArg{Name: "path"},
+	},
+	Flags: []cli.Flag{
+		flagConfig,
+	},
+	Action: func(ctx context.Context, command *cli.Command) error {
+		config, err := getConfig(command)
+		if err != nil {
+			return err
+		}
+
+		filePath := command.StringArg("path")
+		if filePath == "" {
+			return errors.New("argument path is required")
+		}
+		filePath, err = filepath.Abs(filePath)
+		if err != nil {
+			return err
+		}
+
+		db, err := openDB(config.DSN)
+		if err != nil {
+			return err
+		}
+
+		tagger := ft.NewTagger(db)
+		err = tagger.Migrate()
+		if err != nil {
+			return err
+		}
+
+		tags, err := tagger.GetTags(filePath)
+		if err != nil {
+			return err
+		}
+
+		for _, tag := range tags {
+			fmt.Printf("%s=%s\n", tag.Name, tag.Value)
+		}
+
+		return nil
 	},
 }
 
@@ -80,44 +266,10 @@ var cmdTag = &cli.Command{
 		&cli.StringArgs{Name: "tags", Max: 10},
 	},
 	Flags: []cli.Flag{
-		&cli.StringFlag{
-			Name:    "config",
-			Aliases: []string{"c"},
-			Value:   filepath.Join(homeDir(), ".config", "file-tagger", "config.yaml"),
-		},
+		flagConfig,
 	},
 	Action: func(ctx context.Context, command *cli.Command) error {
-		configPath := command.String("config")
-		config, err := loadConfig(configPath)
-		if err != nil {
-			if !os.IsNotExist(err) {
-				return err
-			}
-			config = defaultConfig()
-			err = saveConfig(configPath, config)
-			if err != nil {
-				return err
-			}
-		}
-
-		err = config.Validate()
-		if err != nil {
-			return err
-		}
-
-		filePath := command.StringArg("path")
-		if filePath == "" {
-			return errors.New("argument path is required")
-		}
-		_, err = os.Stat(filePath)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return errors.Errorf("file %s does not exist", filePath)
-			}
-			return err
-		}
-
-		filePath, err = filepath.Abs(filePath)
+		config, err := getConfig(command)
 		if err != nil {
 			return err
 		}
@@ -127,11 +279,26 @@ var cmdTag = &cli.Command{
 			return errors.New("argument tags is required")
 		}
 
-		db, err := gorm.Open(sqlite.Open(config.DSN), &gorm.Config{
-			Logger: gormzerolog.NewGormLogger(),
-		})
+		filePath := command.StringArg("path")
+		if filePath == "" {
+			return errors.New("argument path is required")
+		}
+		filePath, err = filepath.Abs(filePath)
 		if err != nil {
-			return errors.Wrap(err, "open db")
+			return err
+		}
+
+		_, err = os.Stat(filePath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return errors.Errorf("file %s does not exist", filePath)
+			}
+			return err
+		}
+
+		db, err := openDB(config.DSN)
+		if err != nil {
+			return err
 		}
 
 		tagger := ft.NewTagger(db)
@@ -150,14 +317,6 @@ var cmdTag = &cli.Command{
 
 		return nil
 	},
-}
-
-func homeDir() string {
-	h, err := os.UserHomeDir()
-	if err != nil {
-		panic(err)
-	}
-	return h
 }
 
 func main() {

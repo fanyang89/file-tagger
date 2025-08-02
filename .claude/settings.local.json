@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go build:*)",
+      "Bash(./file_tagger tag:*)",
+      "Bash(./file_tagger show test.txt)",
+      "Bash(mkdir:*)"
+    ],
+    "deny": []
+  }
+}

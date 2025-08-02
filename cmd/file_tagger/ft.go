@@ -339,9 +339,19 @@ var cmdMount = &cli.Command{
 		if err != nil {
 			return err
 		}
-		_ = config
 
-		f, err := ft.NewTagFileSystem()
+		db, err := openDB(config.DSN)
+		if err != nil {
+			return err
+		}
+
+		tagger := ft.NewTagger(db)
+		err = tagger.Migrate()
+		if err != nil {
+			return err
+		}
+
+		f, err := ft.NewTagFileSystem(&tagger)
 		if err != nil {
 			return err
 		}
